@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Root stack (includes networking, frontend, backend, and IAM)
+
+Parameters:
+  KeyName:
+    Type: String
+    Description: Name of existing EC2 KeyPair
+  SubDomainName:
+    Type: String
+    Description: Sub-subdomain name (will create <subdomain>.aws.jpe230.com)
+    Default: hackathon
+    AllowedPattern: "^[a-z0-9-]+$"
+    ConstraintDescription: Must be lowercase alphanumeric with hyphens
+  HostedZoneId:
+    Type: String
+    Description: Route53 Hosted Zone ID for aws.jpe230.com domain
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+    Description: Latest Ubuntu 22.04 AMI from SSM Parameter Store
+  GithubRef:
+    Type: String
+    Description: Reference for the GitHub Repo and branch to deploy from (repo:<USERNAME>/<REPO>:ref:<REF>)
+    Default: repo:Jpe230/HackathonAWS:ref:refs/heads/main
+Resources:
+  NetworkingStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://jpe230-cf-templates.s3.us-east-2.amazonaws.com/networking.yaml
+      Parameters:
+        KeyName: !Ref KeyName
+        RootStackName: !Ref AWS::StackName
+
+  CertificateStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://jpe230-cf-templates.s3.us-east-2.amazonaws.com/certificate.yaml
+      Parameters:
+        SubDomainName: !Ref SubDomainName
+        HostedZoneId: !Ref HostedZoneId
+
+  IAMStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://jpe230-cf-templates.s3.us-east-2.amazonaws.com/iam.yaml
+      Parameters:
+        ReactBucketName: !Sub "frontend-${AWS::AccountId}-${AWS::StackName}"
+        SubDomainName: !Ref SubDomainName
+        HostedZoneId: !Ref HostedZoneId
+        GithubRef: !Ref GithubRef
+        RootStackName: !Ref AWS::StackName
+
+  FrontendStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [BackendStack, CertificateStack]
+    Properties:
+      TemplateURL: https://jpe230-cf-templates.s3.us-east-2.amazonaws.com/front.yaml
+      Parameters:
+        ReactBucketName: !Sub "frontend-${AWS::AccountId}-${AWS::StackName}"
+        SubDomainName: !Ref SubDomainName
+        HostedZoneId: !Ref HostedZoneId
+        RootStackName: !Ref AWS::StackName
+
+  BackendStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [NetworkingStack, CertificateStack, IAMStack]
+    Properties:
+      TemplateURL: https://jpe230-cf-templates.s3.us-east-2.amazonaws.com/backend.yaml
+      Parameters:
+        KeyName: !Ref KeyName
+        AmiId: !Ref AmiId
+        SubDomainName: !Ref SubDomainName
+        HostedZoneId: !Ref HostedZoneId
+        RootStackName: !Ref AWS::StackName
+
+  DeploymentSecrets:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}-deployment-secrets"
+      Description: Secrets for GitHub Actions deployment pipeline
+      SecretString: !Sub |
+        {
+          "AWS_FRONTEND_ROLE_ARN": "${IAMStack.Outputs.GitHubFrontendRoleArn}",
+          "AWS_S3_BUCKET_NAME": "${FrontendStack.Outputs.S3BucketName}",
+          "AWS_CLOUDFRONT_DISTRIBUTION_ID": "${FrontendStack.Outputs.CloudFrontDistributionId}",
+          "AWS_BACKEND_ROLE_ARN": "${IAMStack.Outputs.GitHubBackendRoleArn}",
+          "AWS_CODEDEPLOY_S3_BUCKET_NAME": "${BackendStack.Outputs.CodeDeployS3BucketName}",
+          "AWS_CODEDEPLOY_APPLICATION_NAME": "${BackendStack.Outputs.CodeDeployApplicationName}",
+          "AWS_CODEDEPLOY_DEPLOYMENT_GROUP_NAME": "${BackendStack.Outputs.CodeDeployDeploymentGroupName}",
+          "CORS_ORIGIN": "${FrontendStack.Outputs.WebsiteURL}"
+        }
+
+Outputs:
+  WebsiteURL:
+    Description: URL of the website
+    Value: !GetAtt FrontendStack.Outputs.WebsiteURL
+  APIURL:
+    Description: URL of the API endpoint
+    Value: !GetAtt BackendStack.Outputs.APIURL
+  S3BucketName:
+    Description: Name of the S3 bucket for frontend deployment
+    Value: !Sub "frontend-${AWS::AccountId}-${AWS::StackName}"
+  CloudFrontDistributionId:
+    Description: CloudFront Distribution ID
+    Value: !GetAtt FrontendStack.Outputs.CloudFrontDistributionId
+  LoadBalancerDNS:
+    Description: DNS name of the Application Load Balancer
+    Value: !GetAtt BackendStack.Outputs.LoadBalancerDNS
+  CodeDeployApplicationName:
+    Description: CodeDeploy Application Name
+    Value: !GetAtt BackendStack.Outputs.CodeDeployApplicationName
+  CodeDeployDeploymentGroupName:
+    Description: CodeDeploy Deployment Group Name
+    Value: !GetAtt BackendStack.Outputs.CodeDeployDeploymentGroupName
+  CodeDeployS3BucketName:
+    Description: S3 Bucket for CodeDeploy artifacts
+    Value: !GetAtt BackendStack.Outputs.CodeDeployS3BucketName
+  GitHubFrontendRoleArn:
+    Description: ARN of the GitHub Actions role for frontend deployment
+    Value: !GetAtt IAMStack.Outputs.GitHubFrontendRoleArn
+  GitHubBackendRoleArn:
+    Description: ARN of the GitHub Actions role for backend deployment
+    Value: !GetAtt IAMStack.Outputs.GitHubBackendRoleArn
+  OIDCProviderArn:
+    Description: ARN of the OIDC Provider for GitHub
+    Value: !GetAtt IAMStack.Outputs.OIDCProviderArn
+  DeploymentSecretsArn:
+    Description: ARN of the deployment pipeline secrets in Secrets Manager
+    Value: !Ref DeploymentSecrets

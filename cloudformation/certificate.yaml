@@ -1,0 +1,30 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ACM certificate for CloudFront and ALB
+
+Parameters:
+  SubDomainName:
+    Type: String
+    Description: Sub-subdomain name
+  HostedZoneId:
+    Type: String
+    Description: Route53 Hosted Zone ID for aws.jpe230.com domain
+
+Resources:
+  # Free SSL certificate for CloudFront and ALB
+  SSLCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Sub "${SubDomainName}.aws.jpe230.com"
+      SubjectAlternativeNames:
+        - !Sub "*.${SubDomainName}.aws.jpe230.com"
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Sub "${SubDomainName}.aws.jpe230.com"
+          HostedZoneId: !Ref HostedZoneId
+
+Outputs:
+  SSLCertificateArn:
+    Description: ARN of the SSL Certificate
+    Value: !Ref SSLCertificate
+    Export:
+      Name: SSLCertificateArn

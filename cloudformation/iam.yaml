@@ -1,0 +1,224 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: IAM resources (roles, OIDC, policies)
+
+Parameters:
+  ReactBucketName:
+    Type: String
+    Description: Name for S3 bucket (must be globally unique)
+  SubDomainName:
+    Type: String
+    Description: Sub-subdomain name
+  HostedZoneId:
+    Type: String
+    Description: Route53 Hosted Zone ID for aws.jpe230.com domain
+  GithubRef:
+    Type: String
+    Description: Reference for the GitHub Repo and branch to deploy from (repo:<USERNAME>/<REPO>:ref:<REF>)
+  RootStackName:
+    Type: String
+    Description: Name of the root stack for unique resource naming
+Resources:
+  # OIDC Provider for GitHub Actions
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  # IAM Role for GitHub Actions to deploy frontend
+  GitHubActionsFrontendRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${RootStackName}-github-frontend-role"
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "${GitHubOIDCProvider}"
+                  },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+                    },
+                    "StringLike": {
+                      "token.actions.githubusercontent.com:sub": "${GithubRef}"
+                    }
+                  }
+                }
+              ]
+            }
+          - {
+              GitHubOIDCProvider: !Ref GitHubOIDCProvider,
+              GithubRef: !Ref GithubRef
+            }
+      Policies:
+        - PolicyName: S3DeploymentPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                  - s3:GetObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${ReactBucketName}"
+                  - !Sub "arn:aws:s3:::${ReactBucketName}/*"
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${RootStackName}-deployment-secrets*"
+
+  # IAM Role for GitHub Actions to deploy backend
+  GitHubActionsBackendRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${RootStackName}-github-backend-role"
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "${GitHubOIDCProvider}"
+                  },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+                    },
+                    "StringLike": {
+                      "token.actions.githubusercontent.com:sub": "${GithubRef}"
+                    }
+                  }
+                }
+              ]
+            }
+          - {
+              GitHubOIDCProvider: !Ref GitHubOIDCProvider,
+              GithubRef: !Ref GithubRef
+            }
+      Policies:
+        - PolicyName: CodeDeployPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - codedeploy:CreateDeployment
+                  - codedeploy:GetApplication
+                  - codedeploy:GetApplicationRevision
+                  - codedeploy:GetDeployment
+                  - codedeploy:GetDeploymentConfig
+                  - codedeploy:RegisterApplicationRevision
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${RootStackName}-deployment-secrets*"
+  
+  # IAM Role for CodeDeploy service
+  CodeDeployServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${RootStackName}-codedeploy-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codedeploy.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
+
+ # IAM Role for EC2 instances, it allows codedeploy agents to use codedeploy + access to the deployment bucket
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${RootStackName}-ec2-instance-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: CodeDeployAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codedeploy:Put*
+                  - codedeploy:Update*
+                  - codedeploy:Get*
+                  - codedeploy:Register*
+                  - s3:Get*
+                  - s3:List*
+                  - cloudwatch:PutMetricData
+                  - logs:*
+                  - ec2:Describe*
+                Resource: "*"
+
+  # Profile glue
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
+      InstanceProfileName: !Sub "${RootStackName}-ec2-profile"
+
+Outputs:
+  GitHubFrontendRoleArn:
+    Description: ARN of the GitHub Actions role for frontend deployment
+    Value: !GetAtt GitHubActionsFrontendRole.Arn
+    Export:
+      Name: GitHubFrontendRoleArn
+  GitHubBackendRoleArn:
+    Description: ARN of the GitHub Actions role for backend deployment
+    Value: !GetAtt GitHubActionsBackendRole.Arn
+    Export:
+      Name: GitHubBackendRoleArn
+  OIDCProviderArn:
+    Description: ARN of the OIDC Provider for GitHub
+    Value: !Ref GitHubOIDCProvider
+    Export:
+      Name: OIDCProviderArn
+  CodeDeployServiceRoleArn:
+    Description: ARN of the CodeDeploy role
+    Value: !GetAtt CodeDeployServiceRole.Arn
+    Export:
+      Name: CodeDeployServiceRoleArn
+  EC2InstanceProfileName:
+    Value: !Ref EC2InstanceProfile
+    Export:
+      Name: EC2InstanceProfileName

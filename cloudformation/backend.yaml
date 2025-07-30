@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Backend resources (EC2, ASG, ALB, CodeDeploy, CloudWatch)
+
+Parameters:
+  KeyName:
+    Type: String
+    Description: Name of existing EC2 KeyPair
+  AmiId:
+    Type: String
+    Description: Latest Ubuntu 22.04 AMI from SSM Parameter Store
+  SubDomainName:
+    Type: String
+    Description: Sub-subdomain name
+  HostedZoneId:
+    Type: String
+    Description: Route53 Hosted Zone ID for aws.jpe230.com domain
+  RootStackName:
+    Type: String
+    Description: Name of the root stack for unique resource naming
+
+Resources:
+  # S3 Bucket for CodeDeploy artifacts
+  CodeDeployS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${RootStackName}-cd"
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # CodeDeploy Application
+  CodeDeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Sub "${RootStackName}-app"
+      ComputePlatform: Server
+
+  # CodeDeploy Deployment Group
+  CodeDeployDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      DeploymentGroupName: !Sub "${RootStackName}-deployment-group"
+      ServiceRoleArn: !ImportValue CodeDeployServiceRoleArn
+      DeploymentConfigName: CodeDeployDefault.AllAtOnce
+      AutoScalingGroups:
+        - !Ref AutoScalingGroup
+      AutoRollbackConfiguration:
+        Enabled: true
+        Events:
+          - DEPLOYMENT_FAILURE
+          - DEPLOYMENT_STOP_ON_ALARM
+
+  # Launch Template for Auto Scaling Group
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${RootStackName}-launch-template"
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: t3.micro
+        KeyName: !Ref KeyName
+        SecurityGroupIds:
+          - !ImportValue InstanceSecurityGroupId
+        IamInstanceProfile:
+          Name: !ImportValue EC2InstanceProfileName
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            apt-get update
+            apt-get install -y nodejs npm ruby wget curl unzip
+            cd /home/ubuntu
+            wget https://aws-codedeploy-${AWS::Region}.s3.${AWS::Region}.amazonaws.com/latest/install
+            chmod +x ./install
+            ./install auto
+            systemctl start codedeploy-agent
+            systemctl enable codedeploy-agent
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub "${RootStackName}-instance"
+              - Key: Environment
+                Value: production
+
+  # Auto Scaling Group
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !ImportValue PrivateSubnet1Id
+        - !ImportValue PrivateSubnet2Id
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 3
+      DesiredCapacity: 1
+      TargetGroupARNs:
+        - !Ref TargetGroup
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 300
+      Tags:
+        - Key: Name
+          Value: !Sub "${RootStackName}-asg"
+          PropagateAtLaunch: true
+
+  # Application Load Balancer
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${RootStackName}-alb"
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !ImportValue PublicSubnet1Id
+        - !ImportValue PublicSubnet2Id
+      SecurityGroups:
+        - !ImportValue ALBSecurityGroupId
+      Tags:
+        - Key: Name
+          Value: !Sub "${RootStackName}-alb"
+
+  # Target Group for the backend API
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${RootStackName}-tg"
+      Port: 3000
+      Protocol: HTTP
+      VpcId: !ImportValue VPCId
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
+      TargetType: instance
+      Tags:
+        - Key: Name
+          Value: !Sub "${RootStackName}-tg"
+
+  # ALB Listener for HTTP (redirects to HTTPS)
+  ALBListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: 443
+            StatusCode: HTTP_301
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  # ALB Listener for HTTPS
+  ALBListenerHTTPS:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !ImportValue SSLCertificateArn
+
+  # CloudWatch Alarm for for Auto Scaling
+  HighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn:
+    - CodeDeployDeploymentGroup
+    Properties:
+      AlarmDescription: High CPU utilization
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      AlarmActions:
+        - !Ref ScaleUpPolicy
+
+  ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    DependsOn:
+    - CodeDeployDeploymentGroup
+    Properties:
+      AdjustmentType: PercentChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      ScalingAdjustment: 50
+      Cooldown: 300
+
+Outputs:
+  APIURL:
+    Description: URL of the API endpoint
+    Value: !Sub "https://${SubDomainName}.aws.jpe230.com/api"
+    Export:
+      Name: APIURL
+  LoadBalancerDNS:
+    Description: DNS name of the Application Load Balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: LoadBalancerDNS
+  CodeDeployApplicationName:
+    Description: CodeDeploy Application Name
+    Value: !Ref CodeDeployApplication
+    Export:
+      Name: CodeDeployApplicationName
+  CodeDeployDeploymentGroupName:
+    Description: CodeDeploy Deployment Group Name
+    Value: !Ref CodeDeployDeploymentGroup
+    Export:
+      Name: CodeDeployDeploymentGroupName
+  CodeDeployS3BucketName:
+    Description: S3 Bucket for CodeDeploy artifacts
+    Value: !Ref CodeDeployS3Bucket
+    Export:
+      Name: CodeDeployS3BucketName
