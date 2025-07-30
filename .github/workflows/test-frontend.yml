@@ -20,6 +20,6 @@ jobs:
         # Step 3: Install dependencies and run tests
         - name: Install and Test
           run: |
-            cd Frontend       # Navigate to Frontend directory
+            cd frontend       # Navigate to Frontend directory
             npm install       # Install dependencies
             npm test          # Run tests
