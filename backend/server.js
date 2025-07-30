@@ -40,11 +40,11 @@ app.post('/api/marco', async (req, res) => {
       return res.status(400).json({ error: 'Text input is required.' });
     }
 
-    if (text.toLowerCase() === 'marco')
+    if (text.toLowerCase().trim() === 'marco')
     {
        return res.status(200).json({ marco: 'Polo' });
     }
-    if (text.toLowerCase() === 'polo')
+    if (text.toLowerCase().trim() === 'polo')
     {
       return res.status(200).json({ marco: 'Marco' });
     }
