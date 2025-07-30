@@ -1,0 +1,17 @@
+# Workflow name as displayed in GitHub Actions UI
+name: Deploy backend to EC2
+
+# Trigger configuration
+on:
+  push:
+    paths:  # Only run when these files change
+      - backend/**                               # Any file in backend directory
+      - .github/workflows/deploy-backend.yml     # Or this workflow file itself
+
+# List of jobs to run
+jobs:
+  test:
+    name: Test backend
+    uses: ./.github/workflows/test-backend.yml
+
+ 

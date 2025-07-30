@@ -1,0 +1,15 @@
+# Workflow name as displayed in GitHub Actions UI
+name: Deploy frontend to S3
+
+# Trigger configuration - when should this workflow run
+on:
+  push:
+    paths:  # Only run when these files change
+      - frontend/**                               # Any file in frontend directory
+      - .github/workflows/deploy-frontend.yml     # Or the workflow itself
+
+# List of jobs to run
+jobs:
+  test:
+    name: Test frontend
+    uses: ./.github/workflows/test-frontend.yml
