@@ -42,7 +42,7 @@ app.post('/api/marco', async (req, res) => {
 
     if (text.toLowerCase() === 'marco')
     {
-       return res.status(200).json({ marco: 'Marco' });
+       return res.status(200).json({ marco: 'Polo' });
     }
     if (text.toLowerCase() === 'polo')
     {
