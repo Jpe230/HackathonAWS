@@ -13,3 +13,72 @@ jobs:
   test:
     name: Test backend
     uses: ./.github/workflows/test-backend.yml
+  
+  deploy:
+    name: Build and Deploy backend
+    needs: test
+    runs-on: self-hosted
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # Step 1: Check out the repository code
+      - uses: actions/checkout@v3  # Official action to clone repo
+
+      # Step 2: Install AWS CLI and jq
+      - name: Install AWS CLI and jq
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+          sudo snap install aws-cli --classic
+
+      # Step 3: Configure AWS credentials (OIDC)
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_BACKEND_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # Step 4: Configure AWS credentials (OIDC)
+      - name: Retrieve deployment secrets from AWS Secrets Manager
+        id: secrets
+        run: |
+          set -e
+          echo "Retrieving secrets from AWS Secrets Manager..."
+          secret_json=$(aws secretsmanager get-secret-value --secret-id ${{ secrets.DEPLOYMENT_SECRETS_ARN }} --region us-east-1 --query SecretString --output text)
+
+          for key in AWS_BACKEND_ROLE_ARN AWS_CODEDEPLOY_S3_BUCKET_NAME AWS_CODEDEPLOY_APPLICATION_NAME AWS_CODEDEPLOY_DEPLOYMENT_GROUP_NAME CORS_ORIGIN; do
+            value=$(echo "$secret_json" | jq -r ".$key")
+            echo "::add-mask::$value"
+            echo "$key=$value" >> $GITHUB_ENV
+          done
+
+      # Step 5: Configure AWS credentials (OIDC)
+      - name: Create backend .env file
+        run: |
+          set -e
+          echo "Creating .env file for backend..."
+          echo "::add-mask::$CORS_ORIGIN"
+          echo "CORS_ORIGIN=$CORS_ORIGIN" > backend/.env
+
+      - name: Fix permissions
+        run: |
+          chmod +x backend/scripts/*.sh
+
+      # step 6: tar the backend directory
+      - name: Tar Backend
+        run: |
+          tar -czf backend.tar.gz backend  # Create a tarball of the backend directory
+
+      # Step 7: Upload artifact to CodeDeploy S3 bucket
+      - name: Upload artifact to CodeDeploy S3 bucket
+        run: |
+          aws s3 cp backend.tar.gz s3://${{ env.AWS_CODEDEPLOY_S3_BUCKET_NAME }}/backend.tar.gz
+
+      # Step 8: Trigger CodeDeploy deployment
+      - name: Trigger CodeDeploy deployment
+        run: |
+          aws deploy create-deployment \
+            --application-name ${{ env.AWS_CODEDEPLOY_APPLICATION_NAME }} \
+            --deployment-group-name ${{ env.AWS_CODEDEPLOY_DEPLOYMENT_GROUP_NAME }} \
+            --s3-location bucket=${{ env.AWS_CODEDEPLOY_S3_BUCKET_NAME }},bundleType=tgz,key=backend.tar.gz \
+            --file-exists-behavior OVERWRITE

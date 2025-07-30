@@ -13,3 +13,67 @@ jobs:
   test:
     name: Test frontend
     uses: ./.github/workflows/test-frontend.yml
+  build:
+    name: Build and Deploy frontend
+    needs: test
+    runs-on: self-hosted
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # Step 1: Check out the repository code
+      - uses: actions/checkout@v3  # Official action to clone repo
+      
+      # Step 2: Set up Node.js environment
+      - name: Setup Node
+        uses: actions/setup-node@v3  # Official Node.js setup action
+        with:
+          node-version: 18   # Specify Node.js version
+      
+      # Step 3: Install AWS CLI and jq
+      - name: Install AWS CLI and jq
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+          sudo snap install aws-cli --classic
+
+      # Step 4: Configure AWS credentials (OIDC)
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_FRONTEND_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # Step 5: Retrieve deployment secrets from AWS Secrets Manager
+      - name: Retrieve deployment secrets from AWS Secrets Manager
+        id: secrets
+        run: |
+          secret_json=$(aws secretsmanager get-secret-value --secret-id ${{ secrets.DEPLOYMENT_SECRETS_ARN }} --region us-east-1 --query SecretString --output text)
+          echo "$secret_json" > deployment_secrets.json
+          for key in AWS_FRONTEND_ROLE_ARN AWS_S3_BUCKET_NAME AWS_CLOUDFRONT_DISTRIBUTION_ID CORS_ORIGIN; do
+            value=$(jq -r ".$key" deployment_secrets.json)
+            echo "::add-mask::$value"
+            echo "$key=$value" >> $GITHUB_ENV
+          done
+
+      # Step 6: Create .env file for React
+      - name: Create .env file for React
+        run: |
+          echo "REACT_APP_BACKEND_URL=${{ env.CORS_ORIGIN }}" > frontend/.env
+
+      # Step 7: Build the React application
+      - name: Build React
+        run: |
+          cd frontend       # Navigate to frontend directory
+          npm install       # Install dependencies
+          npm run build     # Create production build
+      
+
+      # Step 8: Deploy to AWS S3
+      - name: Upload to S3
+        run: |
+          aws s3 sync frontend/build s3://${{ env.AWS_S3_BUCKET_NAME }} --delete
+
+      # Step 9: Invalidate CloudFront cache
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation --distribution-id ${{ env.AWS_CLOUDFRONT_DISTRIBUTION_ID }} --paths '/*'
