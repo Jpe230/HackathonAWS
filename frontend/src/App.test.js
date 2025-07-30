@@ -18,7 +18,7 @@ describe('App Component', () => {
   it('renders the initial state correctly', () => {
     render(<App />);
     // Check if main elements are present
-    expect(screen.getByText('Marco Polo y Chinos')).toBeInTheDocument();
+    expect(screen.getByText('Marco Polo y Chinos y Juanca')).toBeInTheDocument();
   });
 
 });
