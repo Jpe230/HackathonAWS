@@ -7,7 +7,7 @@ on:
     paths:  # Only run when these files change
       - backend/**                               # Any file in backend directory
       - .github/workflows/deploy-backend.yml     # Or this workflow file itself
-
+  workflow_dispatch:
 # List of jobs to run
 jobs:
   test:
