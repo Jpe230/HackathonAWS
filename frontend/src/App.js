@@ -44,7 +44,7 @@ function App() {
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent'
           }}>
-          Marco Polo y Chinos y Juanca
+          Marco Polo y Chinos y Juanca y Angel
         </Typography>
         
         <Paper elevation={3} sx={{ p: 4, mt: 4 }}>
