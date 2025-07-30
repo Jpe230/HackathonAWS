@@ -1,0 +1,13 @@
+name: PR Test Check
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test-backend:
+      uses: ./.github/workflows/test-backend.yml
+
+  test-frontend:
+      uses: ./.github/workflows/test-frontend.yml
