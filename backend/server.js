@@ -45,6 +45,11 @@ app.post('/api/marco', async (req, res) => {
       return res.status(200).json({ marco: 'zzzzzz' });
     }
 
+    if (text.toLowerCase() === 'polo')
+    {
+      return res.status(200).json({ marco: 'Marco' });
+    }
+
     res.json({ marco: 'Polo' });
   } catch (error) {
     res.status(500).json({ error: 'An error occurred while processing your request.' });
